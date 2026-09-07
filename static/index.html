@@ -1,0 +1,462 @@
+<!DOCTYPE html>
+<html lang="id" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TranskripAI - YouTube Transcript Generator & AI Summarizer</title>
+  <meta name="description" content="Ekstrak transkrip video YouTube secara instan dengan timestamp interaktif, ringkasan AI, dan ekspor ke SRT, TXT, dan Markdown.">
+  
+  <!-- Google Fonts: Plus Jakarta Sans -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  
+  <!-- Custom CSS -->
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+
+  <!-- Background Decorative Glows -->
+  <div class="glow-bg glow-1"></div>
+  <div class="glow-bg glow-2"></div>
+
+  <!-- App Wrapper -->
+  <div class="app-container">
+    
+    <!-- Header / Navbar -->
+    <header class="app-header">
+      <div class="brand">
+        <div class="logo-badge">
+          <i class="fa-solid fa-bolt"></i>
+        </div>
+        <div class="brand-text">
+          <h1>Transkrip<span>AI</span></h1>
+          <span class="badge badge-pro">NoteGPT Suite</span>
+        </div>
+      </div>
+
+      <div class="header-actions">
+        <button id="btnSettings" class="btn-icon" title="Pengaturan AI & API Key">
+          <i class="fa-solid fa-sliders"></i>
+          <span class="btn-label">Pengaturan</span>
+        </button>
+        <button id="btnThemeToggle" class="btn-icon" title="Ganti Tema">
+          <i class="fa-solid fa-moon"></i>
+        </button>
+      </div>
+    </header>
+
+    <!-- Hero / Input Section -->
+    <section class="hero-section">
+      <div class="hero-content">
+        <h2>Ekstrak Transkrip & Ringkas Video YouTube</h2>
+        <p>Tempel tautan video YouTube untuk mendapatkan transkrip lengkap, timestamp interaktif, dan ringkasan berbasis AI.</p>
+      </div>
+
+      <form id="urlForm" class="url-card">
+        <div class="input-wrapper">
+          <i class="fa-brands fa-youtube url-icon"></i>
+          <input 
+            type="text" 
+            id="youtubeUrl" 
+            placeholder="Tempel URL YouTube (misal: https://www.youtube.com/watch?v=...)" 
+            autocomplete="off"
+            required
+          >
+          <button type="button" id="btnPaste" class="btn-paste" title="Tempel dari Clipboard">
+            <i class="fa-regular fa-clipboard"></i>
+            <span>Paste</span>
+          </button>
+        </div>
+        <button type="submit" id="btnExtract" class="btn-primary">
+          <i class="fa-solid fa-wand-magic-sparkles"></i>
+          <span>Ekstrak Transkrip</span>
+        </button>
+      </form>
+
+      <!-- Quick Samples -->
+      <div class="quick-samples">
+        <span class="samples-title"><i class="fa-regular fa-lightbulb"></i> Coba contoh cepat:</span>
+        <button class="sample-chip" data-url="https://www.youtube.com/watch?v=dQw4w9WgXcQ">
+          Rick Astley - Never Gonna Give You Up
+        </button>
+        <button class="sample-chip" data-url="https://www.youtube.com/watch?v=aircAruvnKk">
+          Neural Networks (3Blue1Brown)
+        </button>
+        <button class="sample-chip" data-url="https://www.youtube.com/watch?v=jNQXAC9IVRw">
+          Me at the zoo
+        </button>
+      </div>
+    </section>
+
+    <!-- Loading State -->
+    <div id="loadingState" class="loading-state hidden">
+      <div class="spinner"></div>
+      <p class="loading-title">Sedang mengambil transkrip & metadata video...</p>
+      <p class="loading-subtitle">Menghubungkan ke YouTube API dan memproses subtitle</p>
+    </div>
+
+    <!-- Error Banner -->
+    <div id="errorBanner" class="error-banner hidden">
+      <div class="error-icon"><i class="fa-solid fa-triangle-exclamation"></i></div>
+      <div class="error-content">
+        <h4 id="errorTitle">Gagal Memuat</h4>
+        <p id="errorMessage">Subtitle tidak ditemukan pada video ini.</p>
+      </div>
+      <button id="btnCloseError" class="btn-close-error"><i class="fa-solid fa-xmark"></i></button>
+    </div>
+
+    <!-- Main Workspace (Appears after transcript fetched) -->
+    <main id="workspace" class="workspace hidden">
+      
+      <!-- Left Column: Video Player & Info -->
+      <div class="col-video">
+        <!-- Player Container -->
+        <div class="video-card">
+          <div class="video-responsive">
+            <div id="ytPlayer"></div>
+          </div>
+        </div>
+
+        <!-- Video Metadata Card -->
+        <div class="meta-card">
+          <div class="meta-header">
+            <h3 id="videoTitle" class="video-title">Judul Video</h3>
+            <p id="videoAuthor" class="video-author">Channel Name</p>
+          </div>
+
+          <div class="meta-stats">
+            <div class="stat-badge" title="Durasi Video">
+              <i class="fa-regular fa-clock"></i>
+              <span id="statDuration">00:00</span>
+            </div>
+            <div class="stat-badge" title="Jumlah Kata">
+              <i class="fa-solid fa-font"></i>
+              <span id="statWords">0 kata</span>
+            </div>
+            <div class="stat-badge" title="Total Segmen">
+              <i class="fa-solid fa-layer-group"></i>
+              <span id="statSegments">0 baris</span>
+            </div>
+          </div>
+
+          <!-- Language Selector -->
+          <div class="lang-selector-group">
+            <label for="langSelect"><i class="fa-solid fa-globe"></i> Bahasa Subtitle:</label>
+            <select id="langSelect" class="styled-select"></select>
+          </div>
+
+          <!-- Action Buttons Bar -->
+          <div class="action-bar">
+            <!-- Copy Dropdown -->
+            <div class="dropdown">
+              <button class="btn-action dropdown-toggle" id="btnCopyDropdown">
+                <i class="fa-regular fa-copy"></i>
+                <span>Salin Teks</span>
+                <i class="fa-solid fa-chevron-down caret"></i>
+              </button>
+              <div class="dropdown-menu" id="copyMenu">
+                <button class="dropdown-item" id="btnCopyParagraphs">
+                  <i class="fa-solid fa-paragraph"></i> Salin Mode Paragraf (Teks Bersih)
+                </button>
+                <button class="dropdown-item" id="btnCopyParagraphsTime">
+                  <i class="fa-regular fa-clock"></i> Salin Paragraf + Timestamp
+                </button>
+                <button class="dropdown-item" id="btnCopyClean">
+                  <i class="fa-solid fa-align-left"></i> Salin Semua Teks (Mengalir)
+                </button>
+                <button class="dropdown-item" id="btnCopyTimestamps">
+                  <i class="fa-solid fa-list-ol"></i> Salin Timeline per Baris
+                </button>
+              </div>
+            </div>
+
+            <!-- Download Dropdown -->
+            <div class="dropdown">
+              <button class="btn-action dropdown-toggle" id="btnExportDropdown">
+                <i class="fa-solid fa-download"></i>
+                <span>Unduh File</span>
+                <i class="fa-solid fa-chevron-down caret"></i>
+              </button>
+              <div class="dropdown-menu" id="exportMenu">
+                <button class="dropdown-item" id="btnDownloadTxt">
+                  <i class="fa-regular fa-file-lines"></i> File Teks (.txt)
+                </button>
+                <button class="dropdown-item" id="btnDownloadSrt">
+                  <i class="fa-solid fa-closed-captioning"></i> Subtitle SRT (.srt)
+                </button>
+                <button class="dropdown-item" id="btnDownloadMd">
+                  <i class="fa-brands fa-markdown"></i> Markdown (.md)
+                </button>
+                <button class="dropdown-item" id="btnDownloadJson">
+                  <i class="fa-solid fa-code"></i> JSON Data (.json)
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Interactive Transcript & AI Workspace -->
+      <div class="col-content">
+        <div class="workspace-card">
+          
+          <!-- Navigation Tabs -->
+          <div class="tabs-header">
+            <button class="tab-btn active" data-tab="tab-transcript">
+              <i class="fa-regular fa-file-lines"></i>
+              <span>Transkrip</span>
+            </button>
+            <button class="tab-btn" data-tab="tab-summary">
+              <i class="fa-solid fa-wand-magic-sparkles"></i>
+              <span>Ringkasan AI</span>
+            </button>
+            <button class="tab-btn" data-tab="tab-chapters">
+              <i class="fa-solid fa-list-ul"></i>
+              <span>Bab (Chapters)</span>
+            </button>
+            <button class="tab-btn" data-tab="tab-chat">
+              <i class="fa-regular fa-comments"></i>
+              <span>Tanya Video</span>
+            </button>
+          </div>
+
+          <!-- Tab 1: Interactive Transcript -->
+          <div id="tab-transcript" class="tab-pane active">
+            <!-- Transcript Filter Toolbar -->
+            <div class="transcript-toolbar">
+              <!-- Search Box -->
+              <div class="search-box">
+                <i class="fa-solid fa-magnifying-glass"></i>
+                <input type="text" id="transcriptSearch" placeholder="Cari kata dalam transkrip...">
+                <button id="btnClearSearch" class="btn-clear hidden" title="Hapus pencarian">
+                  <i class="fa-solid fa-xmark"></i>
+                </button>
+              </div>
+
+              <!-- View Switcher: Segmented Control -->
+              <div class="view-mode-group">
+                <div class="segmented-control" role="group" aria-label="Mode Tampilan Transkrip">
+                  <button type="button" id="btnModeTimeline" class="segment-btn active" title="Mode Timeline: Teks per detik dengan timestamp">
+                    <i class="fa-solid fa-list-ul"></i>
+                    <span>Timeline</span>
+                  </button>
+                  <button type="button" id="btnModeParagraph" class="segment-btn" title="Mode Baca: Paragraf mengalir rapi seperti artikel">
+                    <i class="fa-solid fa-align-left"></i>
+                    <span>Mode Baca</span>
+                  </button>
+                </div>
+              </div>
+
+              <!-- Action & Toggles -->
+              <div class="toolbar-actions">
+                <!-- AI Polish Button -->
+                <button type="button" id="btnPolishAI" class="btn-sm btn-polish" title="Rapikan tanda baca, huruf kapital, & tata bahasa">
+                  <i class="fa-solid fa-wand-magic-sparkles"></i>
+                  <span>Rapikan AI</span>
+                </button>
+
+                <!-- Noise Cleaning Toggle -->
+                <label class="toggle-control" title="Saring teks seperti [Musik], ♪♪, dan efek suara">
+                  <input type="checkbox" id="cleanNoiseToggle" checked>
+                  <span class="toggle-slider"></span>
+                  <span class="toggle-label">Bersihkan Musik</span>
+                </label>
+
+                <!-- Auto-scroll Toggle -->
+                <label class="toggle-control" title="Otomatis geser transkrip saat video berputar">
+                  <input type="checkbox" id="autoScrollToggle" checked>
+                  <span class="toggle-slider"></span>
+                  <span class="toggle-label">Auto-scroll</span>
+                </label>
+              </div>
+            </div>
+
+            <!-- Polishing Banner / Active Indicator (Hidden by default) -->
+            <div id="polishStatusBanner" class="polish-status-banner hidden">
+              <div class="polish-status-info">
+                <i class="fa-solid fa-wand-magic-sparkles"></i>
+                <span>Transkrip dirapikan oleh: <strong id="polishProviderName">Built-in Smart Engine</strong></span>
+              </div>
+              <div class="polish-status-actions">
+                <button type="button" id="btnToggleOriginal" class="btn-xs btn-outline">Lihat Asli</button>
+                <button type="button" id="btnCopyPolished" class="btn-xs btn-primary"><i class="fa-regular fa-copy"></i> Salin Rapi</button>
+                <button type="button" id="btnClosePolishBanner" class="btn-icon-xs" title="Tutup info"><i class="fa-solid fa-xmark"></i></button>
+              </div>
+            </div>
+
+            <!-- Polish Loading Overlay -->
+            <div id="polishLoading" class="polish-loading hidden">
+              <div class="spinner-sm"></div>
+              <span>Sedang merapikan tanda baca & tata bahasa dengan AI...</span>
+            </div>
+
+            <!-- View 1: Transcript Cue Items List (Timeline Mode) -->
+            <div id="transcriptList" class="transcript-list">
+              <!-- Rendered via JS -->
+            </div>
+
+            <!-- View 2: Article Paragraphs List (Reading Mode) -->
+            <div id="paragraphList" class="paragraph-list hidden">
+              <!-- Rendered via JS -->
+            </div>
+          </div>
+
+          <!-- Tab 2: AI Summary -->
+          <div id="tab-summary" class="tab-pane">
+            <div class="ai-toolbar">
+              <div class="ai-modes">
+                <button class="ai-mode-btn active" data-mode="summary">
+                  <i class="fa-solid fa-align-left"></i> Ringkasan
+                </button>
+                <button class="ai-mode-btn" data-mode="takeaways">
+                  <i class="fa-solid fa-lightbulb"></i> Poin Kunci
+                </button>
+                <button class="ai-mode-btn" data-mode="mindmap">
+                  <i class="fa-solid fa-diagram-project"></i> Mind Map
+                </button>
+              </div>
+
+              <button id="btnRegenerateSummary" class="btn-sm btn-secondary" title="Buat ulang ringkasan">
+                <i class="fa-solid fa-rotate-right"></i>
+                <span>Generate</span>
+              </button>
+            </div>
+
+            <div id="summaryLoading" class="ai-loading hidden">
+              <div class="spinner-sm"></div>
+              <p>Sedang menganalisis transkrip dengan AI...</p>
+            </div>
+
+            <div id="summaryResult" class="ai-output-box markdown-body">
+              <div class="empty-ai-prompt">
+                <i class="fa-solid fa-brain"></i>
+                <p>Klik tombol <strong>Generate</strong> untuk membuat ringkasan komprehensif dari transkrip video ini.</p>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tab 3: Chapters & Segments -->
+          <div id="tab-chapters" class="tab-pane">
+            <div class="chapters-header">
+              <p class="section-desc">Garis besar per bab waktu video. Klik timestamp untuk melompat langsung ke segmen pembahasan.</p>
+              <button id="btnGenerateChapters" class="btn-sm btn-secondary">
+                <i class="fa-solid fa-arrows-rotate"></i> Update Bab
+              </button>
+            </div>
+            <div id="chaptersList" class="chapters-list">
+              <!-- Rendered via JS -->
+            </div>
+          </div>
+
+          <!-- Tab 4: Ask AI / Video Q&A Chatbot -->
+          <div id="tab-chat" class="tab-pane">
+            <div class="chat-container">
+              <div id="chatMessages" class="chat-messages">
+                <div class="chat-msg bot">
+                  <div class="chat-avatar"><i class="fa-solid fa-robot"></i></div>
+                  <div class="chat-bubble">
+                    <p>Halo! Saya siap menjawab pertanyaan Anda mengenai isi video <strong><span class="chat-video-name">ini</span></strong>. Silakan ketik pertanyaan di bawah atau gunakan prompt cepat berikut:</p>
+                    <div class="quick-prompts">
+                      <button class="quick-prompt-btn" data-prompt="Apa kesimpulan utama dari video ini?">
+                        Apa kesimpulan utamanya?
+                      </button>
+                      <button class="quick-prompt-btn" data-prompt="Apa saja poin penting yang dibahas pembicara?">
+                        Poin penting apa saja?
+                      </button>
+                      <button class="quick-prompt-btn" data-prompt="Sebutkan langkah-langkah atau tips yang diberikan!">
+                        Langkah/Tips apa yang ada?
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Chat Input Bar -->
+              <form id="chatForm" class="chat-input-bar">
+                <input 
+                  type="text" 
+                  id="chatInput" 
+                  placeholder="Tanyakan sesuatu tentang isi video ini..." 
+                  autocomplete="off"
+                  required
+                >
+                <button type="submit" id="btnSendChat" class="btn-send">
+                  <i class="fa-solid fa-paper-plane"></i>
+                </button>
+              </form>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <p>TranskripAI &copy; 2026 &bull; Dibuat untuk produktivitas transkrip, catatan video, & ringkasan AI instan.</p>
+    </footer>
+
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settingsModal" class="modal hidden">
+    <div class="modal-backdrop"></div>
+    <div class="modal-card">
+      <div class="modal-header">
+        <h3><i class="fa-solid fa-sliders"></i> Pengaturan AI & API Key</h3>
+        <button id="btnCloseSettings" class="btn-close-modal"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="modal-body">
+        <p class="modal-desc">
+          TranskripAI sudah dilengkapi <strong>Built-in Smart Engine</strong> yang bekerja 100% gratis tanpa API key. Namun, jika Anda ingin ringkasan yang jauh lebih cerdas dan mendalam, Anda dapat memasukkan API Key Anda sendiri di bawah:
+        </p>
+
+        <div class="form-group">
+          <label for="aiProviderSelect">Penyedia AI (AI Provider):</label>
+          <select id="aiProviderSelect" class="styled-select">
+            <option value="gemini">Google Gemini (Disarankan - Model 1.5/2.0 Flash Gratis)</option>
+            <option value="openai">OpenAI (GPT-4o Mini)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="apiKeyInput">API Key:</label>
+          <div class="input-password-wrapper">
+            <input type="password" id="apiKeyInput" placeholder="Masukkan API Key (AIza... atau sk-...)">
+            <button type="button" id="btnToggleKeyVisibility" class="btn-eye"><i class="fa-solid fa-eye"></i></button>
+          </div>
+          <small class="form-help">API Key disimpan secara aman di browser lokal Anda (Local Storage) dan tidak dibagikan ke pihak ketiga.</small>
+        </div>
+
+        <div class="form-group">
+          <label for="summaryLangSelect">Bahasa Output Ringkasan & Chat:</label>
+          <select id="summaryLangSelect" class="styled-select">
+            <option value="id" selected>Bahasa Indonesia</option>
+            <option value="en">English</option>
+          </select>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button id="btnResetSettings" class="btn-secondary">Hapus API Key</button>
+        <button id="btnSaveSettings" class="btn-primary">Simpan Pengaturan</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toastContainer" class="toast-container"></div>
+
+  <!-- YouTube IFrame API -->
+  <script src="https://www.youtube.com/iframe_api"></script>
+  
+  <!-- Markdown Parser for AI output (Marked.js) -->
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+
+  <!-- Main Application Script -->
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
