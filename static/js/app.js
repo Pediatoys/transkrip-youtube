@@ -18,6 +18,16 @@ const state = {
   filterNoise: localStorage.getItem('filter_noise') !== 'false',
   polishedData: null,
   isShowingPolished: false,
+  pendingWhisperVideoId: null,
+  history: [],
+  tts: {
+    synth: ('speechSynthesis' in window) ? window.speechSynthesis : null,
+    utterance: null,
+    isPlaying: false,
+    isPaused: false,
+    speed: 1.0,
+    text: ''
+  },
   settings: {
     provider: localStorage.getItem('ai_provider') || 'gemini',
     apiKey: localStorage.getItem('ai_api_key') || '',
@@ -50,6 +60,8 @@ const dom = {
   errorTitle: document.getElementById('errorTitle'),
   errorMessage: document.getElementById('errorMessage'),
   btnCloseError: document.getElementById('btnCloseError'),
+  whisperFallbackCard: document.getElementById('whisperFallbackCard'),
+  btnTranscribeWhisper: document.getElementById('btnTranscribeWhisper'),
   workspace: document.getElementById('workspace'),
 
   videoTitle: document.getElementById('videoTitle'),
@@ -66,10 +78,22 @@ const dom = {
   btnCopyParagraphs: document.getElementById('btnCopyParagraphs'),
   btnCopyParagraphsTime: document.getElementById('btnCopyParagraphsTime'),
   btnCopyTimestamps: document.getElementById('btnCopyTimestamps'),
+  btnExportPdf: document.getElementById('btnExportPdf'),
   btnDownloadTxt: document.getElementById('btnDownloadTxt'),
   btnDownloadSrt: document.getElementById('btnDownloadSrt'),
   btnDownloadMd: document.getElementById('btnDownloadMd'),
   btnDownloadJson: document.getElementById('btnDownloadJson'),
+
+  // History Navigation & Drawer
+  btnHistoryToggle: document.getElementById('btnHistoryToggle'),
+  historyCountBadge: document.getElementById('historyCountBadge'),
+  historyDrawer: document.getElementById('historyDrawer'),
+  historyBackdrop: document.getElementById('historyBackdrop'),
+  btnCloseHistory: document.getElementById('btnCloseHistory'),
+  drawerHistoryBadge: document.getElementById('drawerHistoryBadge'),
+  historySearchInput: document.getElementById('historySearchInput'),
+  historyListContainer: document.getElementById('historyListContainer'),
+  btnClearHistory: document.getElementById('btnClearHistory'),
 
   // Tabs & Panes
   tabBtns: document.querySelectorAll('.tab-btn'),
@@ -96,9 +120,16 @@ const dom = {
   transcriptList: document.getElementById('transcriptList'),
   paragraphList: document.getElementById('paragraphList'),
 
-  // AI Summary Pane
+  // AI Summary Pane & TTS
   aiModeBtns: document.querySelectorAll('.ai-mode-btn'),
+  btnListenSummary: document.getElementById('btnListenSummary'),
   btnRegenerateSummary: document.getElementById('btnRegenerateSummary'),
+  ttsPlayerBar: document.getElementById('ttsPlayerBar'),
+  btnTtsPlayPause: document.getElementById('btnTtsPlayPause'),
+  btnTtsStop: document.getElementById('btnTtsStop'),
+  ttsSpeedSelect: document.getElementById('ttsSpeedSelect'),
+  ttsWaveform: document.getElementById('ttsWaveform'),
+  ttsStatusText: document.getElementById('ttsStatusText'),
   summaryLoading: document.getElementById('summaryLoading'),
   summaryResult: document.getElementById('summaryResult'),
 
@@ -121,6 +152,8 @@ const dom = {
 document.addEventListener('DOMContentLoaded', () => {
   initTheme();
   initSettings();
+  initHistory();
+  initTts();
   initEventListeners();
   initDropdowns();
 });
@@ -293,10 +326,16 @@ function initEventListeners() {
   }
   dom.btnCopyClean.addEventListener('click', copyCleanTranscript);
   dom.btnCopyTimestamps.addEventListener('click', copyTranscriptWithTimestamps);
+  if (dom.btnExportPdf) dom.btnExportPdf.addEventListener('click', exportPdfDocument);
   dom.btnDownloadTxt.addEventListener('click', () => downloadFile('txt'));
   dom.btnDownloadSrt.addEventListener('click', () => downloadFile('srt'));
   dom.btnDownloadMd.addEventListener('click', () => downloadFile('md'));
   dom.btnDownloadJson.addEventListener('click', () => downloadFile('json'));
+
+  // Whisper Fallback Action
+  if (dom.btnTranscribeWhisper) {
+    dom.btnTranscribeWhisper.addEventListener('click', () => transcribeWithWhisper());
+  }
 
   // AI Summary Modes
   dom.aiModeBtns.forEach(btn => {
@@ -364,11 +403,23 @@ function switchTab(tabId) {
 }
 
 // ==========================================
+// Video ID Extractor Helper
+// ==========================================
+function extractVideoId(urlOrId) {
+  if (!urlOrId) return '';
+  urlOrId = urlOrId.trim();
+  if (/^[A-Za-z0-9_-]{11}$/.test(urlOrId)) return urlOrId;
+  const match = urlOrId.match(/(?:v=|\/v\/|youtu\.be\/|\/embed\/|\/shorts\/)([A-Za-z0-9_-]{11})/);
+  return match ? match[1] : '';
+}
+
+// ==========================================
 // API: Fetch Transcript
 // ==========================================
 async function fetchTranscript(urlOrId, lang = null) {
   dom.loadingState.classList.remove('hidden');
   dom.errorBanner.classList.add('hidden');
+  if (dom.whisperFallbackCard) dom.whisperFallbackCard.classList.add('hidden');
   dom.btnExtract.disabled = true;
 
   try {
@@ -379,7 +430,26 @@ async function fetchTranscript(urlOrId, lang = null) {
     const data = await res.json();
 
     if (!res.ok) {
-      throw new Error(data.detail || 'Terjadi kesalahan saat mengambil transkrip.');
+      let detailMsg = 'Terjadi kesalahan saat mengambil transkrip.';
+      let canWhisper = false;
+      let vidId = null;
+
+      if (data && data.detail) {
+        if (typeof data.detail === 'object') {
+          detailMsg = data.detail.message || 'Subtitle tidak ditemukan pada video ini.';
+          canWhisper = Boolean(data.detail.can_whisper);
+          vidId = data.detail.video_id;
+        } else {
+          detailMsg = String(data.detail);
+          if (detailMsg.toLowerCase().includes('subtitle') || detailMsg.toLowerCase().includes('transkrip') || res.status === 404) {
+            canWhisper = true;
+          }
+        }
+      }
+      const customErr = new Error(detailMsg);
+      customErr.canWhisper = canWhisper;
+      customErr.videoId = vidId || extractVideoId(urlOrId);
+      throw customErr;
     }
 
     state.currentData = data;
@@ -396,9 +466,92 @@ async function fetchTranscript(urlOrId, lang = null) {
   } catch (err) {
     console.error('Fetch transcript error:', err);
     dom.errorTitle.textContent = 'Gagal Mengambil Transkrip';
-    dom.errorMessage.textContent = err.message;
+    dom.errorMessage.textContent = err.message || 'Subtitle tidak ditemukan pada video ini.';
+
+    const vidId = err.videoId || extractVideoId(urlOrId);
+    state.pendingWhisperVideoId = vidId;
+
+    if (dom.whisperFallbackCard) {
+      if (err.canWhisper || vidId) {
+        dom.whisperFallbackCard.classList.remove('hidden');
+      } else {
+        dom.whisperFallbackCard.classList.add('hidden');
+      }
+    }
     dom.errorBanner.classList.remove('hidden');
   } finally {
+    dom.loadingState.classList.add('hidden');
+    dom.btnExtract.disabled = false;
+  }
+}
+
+// ==========================================
+// API: Transcribe Audio via Whisper AI
+// ==========================================
+async function transcribeWithWhisper(videoId) {
+  const vid = videoId || state.pendingWhisperVideoId || extractVideoId(dom.youtubeUrl.value);
+  if (!vid) {
+    showToast('Video ID tidak valid atau tidak ditemukan.', 'error');
+    return;
+  }
+
+  const apiKey = state.settings.apiKey;
+  const provider = state.settings.provider; // groq or openai
+
+  if (!apiKey) {
+    showToast('Whisper AI memerlukan API Key (Groq Cloud gratis atau OpenAI). Buka menu Pengaturan untuk memasukkan.', 'warning');
+    dom.settingsModal.classList.remove('hidden');
+    dom.aiProviderSelect.value = 'groq';
+    return;
+  }
+
+  dom.loadingState.classList.remove('hidden');
+  dom.errorBanner.classList.add('hidden');
+  dom.btnExtract.disabled = true;
+
+  const loadingTitle = dom.loadingState.querySelector('.loading-title');
+  const loadingSub = dom.loadingState.querySelector('.loading-subtitle');
+  const origTitle = loadingTitle ? loadingTitle.textContent : '';
+  const origSub = loadingSub ? loadingSub.textContent : '';
+
+  if (loadingTitle) loadingTitle.textContent = 'Mengekstrak audio YouTube & menjalankan Whisper AI...';
+  if (loadingSub) loadingSub.textContent = 'Mengunduh audio dan mentranskripsi ucapan otomatis menggunakan model Whisper AI.';
+
+  try {
+    const res = await fetch('/api/transcribe-audio', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        video_id: vid,
+        api_key: apiKey,
+        provider: provider,
+        language: state.settings.language || null
+      })
+    });
+
+    const data = await res.json();
+    if (!res.ok) {
+      const errMsg = typeof data.detail === 'object' ? data.detail.message : (data.detail || 'Gagal memproses audio dengan Whisper AI');
+      throw new Error(errMsg);
+    }
+
+    state.currentData = data;
+    state.currentVideoId = data.video_id;
+
+    renderWorkspace(data);
+    dom.workspace.classList.remove('hidden');
+    dom.workspace.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+    showToast('Transkrip suara berhasil diekstrak via Whisper AI!', 'success');
+  } catch (err) {
+    console.error('Whisper transcribe error:', err);
+    dom.errorTitle.textContent = 'Gagal Whisper AI';
+    dom.errorMessage.textContent = err.message || 'Terjadi kesalahan saat memproses audio video.';
+    if (dom.whisperFallbackCard) dom.whisperFallbackCard.classList.add('hidden');
+    dom.errorBanner.classList.remove('hidden');
+  } finally {
+    if (loadingTitle) loadingTitle.textContent = origTitle;
+    if (loadingSub) loadingSub.textContent = origSub;
     dom.loadingState.classList.add('hidden');
     dom.btnExtract.disabled = false;
   }
@@ -408,6 +561,13 @@ async function fetchTranscript(urlOrId, lang = null) {
 // Render Workspace
 // ==========================================
 function renderWorkspace(data) {
+  // Stop any active TTS audio
+  stopTts();
+  if (dom.ttsPlayerBar) dom.ttsPlayerBar.classList.add('hidden');
+
+  // Save to history automatically
+  saveToHistory(data);
+
   // 1. Meta Info
   dom.videoTitle.textContent = data.title;
   dom.videoAuthor.textContent = data.author;
@@ -1042,6 +1202,7 @@ function copyParagraphs(includeTimestamps = false) {
 async function generateAISummary() {
   if (!state.currentData || !state.currentData.transcript) return;
 
+  stopTts();
   dom.summaryLoading.classList.remove('hidden');
   dom.summaryResult.innerHTML = '';
   dom.btnRegenerateSummary.disabled = true;
@@ -1402,3 +1563,688 @@ function escapeHtml(str) {
 function escapeRegExp(string) {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
+
+// ==========================================
+// Dokumen PDF Cantik (.pdf Export)
+// ==========================================
+function exportPdfDocument() {
+  if (!state.currentData || !state.currentData.transcript) {
+    showToast('Silakan muat transkrip terlebih dahulu', 'warning');
+    return;
+  }
+
+  if (dom.exportDropdown) dom.exportDropdown.classList.remove('active');
+
+  const { title, author, video_id, formatted_duration, total_words, transcript } = state.currentData;
+  const isParagraph = state.viewMode === 'paragraph';
+  const paragraphs = (state.isShowingPolished && state.polishedData && state.polishedData.paragraphs)
+    ? state.polishedData.paragraphs
+    : (state.currentData.paragraphs || groupIntoParagraphsClient(transcript));
+
+  // Get AI summary content if generated
+  let summaryHtml = '';
+  const summaryEl = dom.summaryResult.querySelector('.summary-content');
+  if (summaryEl && summaryEl.innerHTML.trim() && !dom.summaryResult.querySelector('.empty-ai-prompt')) {
+    summaryHtml = `
+      <div class="pdf-summary-section">
+        <h2 class="pdf-section-title">&#10024; Ringkasan & Poin Penting AI</h2>
+        <div class="pdf-summary-body">
+          ${summaryEl.innerHTML}
+        </div>
+      </div>
+    `;
+  }
+
+  // Build transcript body
+  let transcriptHtml = '';
+  if (isParagraph && paragraphs && paragraphs.length > 0) {
+    transcriptHtml = `
+      <div class="pdf-transcript-section">
+        <h2 class="pdf-section-title">&#128221; Transkrip Paragraf</h2>
+        ${paragraphs.map(p => {
+          let text = p.text;
+          if (state.filterNoise) text = cleanNoiseText(text);
+          return `
+            <div class="pdf-paragraph-item">
+              <span class="pdf-time-badge">${p.formatted_start}</span>
+              <p class="pdf-p-text">${escapeHtml(text)}</p>
+            </div>
+          `;
+        }).join('')}
+      </div>
+    `;
+  } else {
+    transcriptHtml = `
+      <div class="pdf-transcript-section">
+        <h2 class="pdf-section-title">&#9201; Transkrip Garis Waktu (Timeline)</h2>
+        <table class="pdf-table">
+          <thead>
+            <tr>
+              <th style="width: 75px;">Waktu</th>
+              <th>Teks Percakapan</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${transcript.map(t => {
+              let text = t.text;
+              if (state.filterNoise) text = cleanNoiseText(text);
+              if (!text) return '';
+              return `
+                <tr>
+                  <td class="pdf-table-time">${formatTime(t.start)}</td>
+                  <td class="pdf-table-text">${escapeHtml(text)}</td>
+                </tr>
+              `;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }
+
+  const printWindow = window.open('', '_blank');
+  if (!printWindow) {
+    showToast('Popup browser diblokir. Izinkan popup untuk mengunduh dokumen PDF.', 'error');
+    return;
+  }
+
+  const printContent = `<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>${escapeHtml(title)} - Transkrip & Ringkasan Video</title>
+  <style>
+    @page {
+      size: A4;
+      margin: 16mm 14mm 16mm 14mm;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      color: #1e293b;
+      line-height: 1.6;
+      background: #fff;
+      margin: 0;
+      padding: 20px;
+      font-size: 13px;
+    }
+    .pdf-header {
+      border-bottom: 2px solid #e2e8f0;
+      padding-bottom: 12px;
+      margin-bottom: 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .pdf-brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 800;
+      font-size: 16px;
+      color: #0f172a;
+    }
+    .pdf-brand-icon {
+      background: #ef4444;
+      color: white;
+      width: 24px;
+      height: 24px;
+      border-radius: 6px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+    }
+    .pdf-date {
+      font-size: 11px;
+      color: #64748b;
+    }
+    .pdf-title-card {
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      padding: 16px 18px;
+      margin-bottom: 20px;
+      page-break-inside: avoid;
+    }
+    .pdf-title-card h1 {
+      margin: 0 0 10px 0;
+      font-size: 17px;
+      font-weight: 700;
+      color: #0f172a;
+      line-height: 1.35;
+    }
+    .pdf-meta-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      font-size: 12px;
+      color: #475569;
+    }
+    .pdf-meta-item strong {
+      color: #0f172a;
+    }
+    .pdf-meta-item a {
+      color: #3b82f6;
+      text-decoration: none;
+    }
+    .pdf-section-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: #0f172a;
+      border-bottom: 1px solid #cbd5e1;
+      padding-bottom: 6px;
+      margin: 20px 0 12px 0;
+      page-break-after: avoid;
+    }
+    .pdf-summary-section {
+      background: #f1f5f9;
+      border-left: 4px solid #6366f1;
+      padding: 14px 18px;
+      border-radius: 0 8px 8px 0;
+      margin-bottom: 20px;
+      page-break-inside: avoid;
+    }
+    .pdf-summary-body {
+      font-size: 12.5px;
+      line-height: 1.6;
+    }
+    .pdf-summary-body h3, .pdf-summary-body h4 {
+      margin: 10px 0 4px 0;
+      font-size: 13px;
+    }
+    .pdf-summary-body ul, .pdf-summary-body ol {
+      margin: 6px 0;
+      padding-left: 20px;
+    }
+    .pdf-summary-body li {
+      margin-bottom: 4px;
+    }
+    .pdf-paragraph-item {
+      margin-bottom: 12px;
+      page-break-inside: avoid;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+    .pdf-time-badge {
+      background: #e0e7ff;
+      color: #4338ca;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 4px;
+      white-space: nowrap;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    .pdf-p-text {
+      margin: 0;
+      color: #334155;
+      font-size: 12.5px;
+      line-height: 1.65;
+    }
+    .pdf-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 6px;
+    }
+    .pdf-table th {
+      background: #f8fafc;
+      color: #475569;
+      font-weight: 600;
+      text-align: left;
+      padding: 6px 10px;
+      border: 1px solid #e2e8f0;
+      font-size: 11px;
+      text-transform: uppercase;
+    }
+    .pdf-table td {
+      padding: 6px 10px;
+      border: 1px solid #e2e8f0;
+      vertical-align: top;
+    }
+    .pdf-table-time {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 11px;
+      color: #6366f1;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .pdf-table-text {
+      color: #334155;
+      font-size: 12px;
+    }
+    .pdf-table tr:nth-child(even) td {
+      background: #fafafa;
+    }
+    .pdf-footer {
+      margin-top: 28px;
+      border-top: 1px solid #e2e8f0;
+      padding-top: 10px;
+      display: flex;
+      justify-content: space-between;
+      color: #94a3b8;
+      font-size: 10px;
+      page-break-inside: avoid;
+    }
+    @media print {
+      body { padding: 0; }
+      a { text-decoration: none; color: inherit; }
+    }
+  </style>
+</head>
+<body>
+  <div class="pdf-header">
+    <div class="pdf-brand">
+      <span class="pdf-brand-icon">&#9658;</span>
+      <span>TranskripAI</span>
+    </div>
+    <div class="pdf-date">Dicetak pada: ${new Date().toLocaleDateString('id-ID', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit' })}</div>
+  </div>
+
+  <div class="pdf-title-card">
+    <h1>${escapeHtml(title)}</h1>
+    <div class="pdf-meta-grid">
+      <div class="pdf-meta-item"><span>Pembuat:</span> <strong>${escapeHtml(author)}</strong></div>
+      <div class="pdf-meta-item"><span>Durasi:</span> <strong>${formatted_duration}</strong></div>
+      <div class="pdf-meta-item"><span>Jumlah Kata:</span> <strong>${total_words.toLocaleString()} kata</strong></div>
+      <div class="pdf-meta-item"><span>YouTube:</span> <a href="https://www.youtube.com/watch?v=${video_id}" target="_blank">https://youtu.be/${video_id}</a></div>
+    </div>
+  </div>
+
+  ${summaryHtml}
+  ${transcriptHtml}
+
+  <div class="pdf-footer">
+    <span>Dihasilkan secara otomatis oleh TranskripAI &bull; Catatan Video & AI Summarizer</span>
+    <span>Dokumen Transkrip YouTube</span>
+  </div>
+
+  <script>
+    window.addEventListener('load', () => {
+      setTimeout(() => {
+        window.print();
+      }, 350);
+    });
+  <\/script>
+</body>
+</html>`;
+
+  printWindow.document.open();
+  printWindow.document.write(printContent);
+  printWindow.document.close();
+  showToast('Membuka dialog cetak PDF...', 'info');
+}
+
+// ==========================================
+// Riwayat Transkrip (History Drawer Panel)
+// ==========================================
+function initHistory() {
+  try {
+    const stored = localStorage.getItem('notetube_history');
+    state.history = stored ? JSON.parse(stored) : [];
+  } catch (e) {
+    state.history = [];
+  }
+  updateHistoryUI();
+
+  if (dom.btnHistoryToggle) {
+    dom.btnHistoryToggle.addEventListener('click', openHistoryDrawer);
+  }
+  if (dom.btnCloseHistory) {
+    dom.btnCloseHistory.addEventListener('click', closeHistoryDrawer);
+  }
+  if (dom.historyBackdrop) {
+    dom.historyBackdrop.addEventListener('click', closeHistoryDrawer);
+  }
+  if (dom.historySearchInput) {
+    dom.historySearchInput.addEventListener('input', (e) => {
+      renderHistoryList(e.target.value.trim());
+    });
+  }
+  if (dom.btnClearHistory) {
+    dom.btnClearHistory.addEventListener('click', () => {
+      if (!state.history || state.history.length === 0) return;
+      if (confirm('Hapus semua riwayat transkrip yang tersimpan?')) {
+        state.history = [];
+        localStorage.removeItem('notetube_history');
+        updateHistoryUI();
+        renderHistoryList();
+        showToast('Semua riwayat transkrip telah dihapus.', 'info');
+      }
+    });
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && dom.historyDrawer && !dom.historyDrawer.classList.contains('hidden')) {
+      closeHistoryDrawer();
+    }
+  });
+}
+
+function openHistoryDrawer() {
+  renderHistoryList();
+  if (dom.historyDrawer) dom.historyDrawer.classList.remove('hidden');
+  if (dom.historySearchInput) {
+    dom.historySearchInput.value = '';
+    setTimeout(() => dom.historySearchInput.focus(), 150);
+  }
+}
+
+function closeHistoryDrawer() {
+  if (dom.historyDrawer) dom.historyDrawer.classList.add('hidden');
+}
+
+function saveToHistory(data) {
+  if (!data || !data.video_id) return;
+  const entry = {
+    videoId: data.video_id,
+    title: data.title || 'Video YouTube',
+    author: data.author || 'YouTube Channel',
+    thumbnailUrl: data.thumbnail_url || `https://i.ytimg.com/vi/${data.video_id}/hqdefault.jpg`,
+    formattedDuration: data.formatted_duration || '00:00',
+    totalWords: data.total_words || 0,
+    totalItems: data.total_items || 0,
+    timestamp: Date.now(),
+    isWhisper: Boolean(data.is_whisper),
+    cachedData: data
+  };
+
+  // Keep latest 30 unique videos
+  state.history = [entry, ...state.history.filter(h => h.videoId !== entry.videoId)].slice(0, 30);
+  try {
+    localStorage.setItem('notetube_history', JSON.stringify(state.history));
+  } catch (err) {
+    console.warn('LocalStorage limit, optimizing history storage:', err);
+    state.history = state.history.map((h, idx) => idx > 5 ? { ...h, cachedData: null } : h);
+    try {
+      localStorage.setItem('notetube_history', JSON.stringify(state.history));
+    } catch (_) {}
+  }
+  updateHistoryUI();
+}
+
+function updateHistoryUI() {
+  const count = state.history ? state.history.length : 0;
+  if (dom.historyCountBadge) dom.historyCountBadge.textContent = count;
+  if (dom.drawerHistoryBadge) dom.drawerHistoryBadge.textContent = count;
+}
+
+function renderHistoryList(query = '') {
+  if (!dom.historyListContainer) return;
+  const container = dom.historyListContainer;
+  container.innerHTML = '';
+
+  const q = query.toLowerCase();
+  const filtered = (state.history || []).filter(item => {
+    if (!q) return true;
+    return (item.title && item.title.toLowerCase().includes(q)) ||
+           (item.author && item.author.toLowerCase().includes(q));
+  });
+
+  if (filtered.length === 0) {
+    container.innerHTML = `
+      <div class="history-empty-state">
+        <i class="fa-solid fa-clock-rotate-left"></i>
+        <p>${query ? `Tidak ditemukan hasil untuk "<strong>${escapeHtml(query)}</strong>"` : 'Belum ada riwayat transkrip tersimpan.'}</p>
+        <small>${query ? 'Coba cari dengan judul atau nama channel lain' : 'Video yang Anda transkrip akan otomatis disimpan di sini.'}</small>
+      </div>
+    `;
+    return;
+  }
+
+  filtered.forEach(item => {
+    const card = document.createElement('div');
+    card.className = 'history-card';
+    card.setAttribute('data-video-id', item.videoId);
+
+    const relativeTime = formatRelativeTime(item.timestamp);
+    const whisperBadge = item.isWhisper ? '<span style="color:var(--primary);font-weight:700;"><i class="fa-solid fa-wand-magic-sparkles"></i> Whisper</span> &bull; ' : '';
+
+    card.innerHTML = `
+      <div class="history-thumb-wrap">
+        <img src="${item.thumbnailUrl}" alt="Thumbnail" loading="lazy" onerror="this.src='https://i.ytimg.com/vi/${item.videoId}/hqdefault.jpg'" />
+        <span class="history-duration">${item.formattedDuration}</span>
+      </div>
+      <div class="history-details">
+        <h4 class="history-item-title">${escapeHtml(item.title)}</h4>
+        <div class="history-item-meta">
+          <span>${escapeHtml(item.author)}</span>
+          <span>&bull;</span>
+          <span>${whisperBadge}${relativeTime}</span>
+        </div>
+      </div>
+      <button type="button" class="history-btn-del" title="Hapus dari riwayat">
+        <i class="fa-regular fa-trash-can"></i>
+      </button>
+    `;
+
+    // Click card to reload video
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('.history-btn-del')) return;
+      closeHistoryDrawer();
+
+      if (item.cachedData) {
+        state.currentData = item.cachedData;
+        state.currentVideoId = item.videoId;
+        dom.youtubeUrl.value = `https://www.youtube.com/watch?v=${item.videoId}`;
+        renderWorkspace(item.cachedData);
+        dom.workspace.classList.remove('hidden');
+        dom.workspace.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        showToast(`Memuat "${item.title}" dari riwayat!`, 'info');
+      } else {
+        dom.youtubeUrl.value = `https://www.youtube.com/watch?v=${item.videoId}`;
+        fetchTranscript(item.videoId);
+      }
+    });
+
+    // Delete button
+    card.querySelector('.history-btn-del').addEventListener('click', (e) => {
+      e.stopPropagation();
+      deleteHistoryItem(item.videoId);
+    });
+
+    container.appendChild(card);
+  });
+}
+
+function deleteHistoryItem(videoId) {
+  state.history = state.history.filter(h => h.videoId !== videoId);
+  try {
+    localStorage.setItem('notetube_history', JSON.stringify(state.history));
+  } catch (_) {}
+  updateHistoryUI();
+  renderHistoryList(dom.historySearchInput ? dom.historySearchInput.value.trim() : '');
+  showToast('Item riwayat dihapus.', 'info');
+}
+
+function formatRelativeTime(ts) {
+  if (!ts) return '';
+  const diff = Date.now() - ts;
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'Baru saja';
+  if (mins < 60) return `${mins} mnt lalu`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours} jam lalu`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} hari lalu`;
+  return new Date(ts).toLocaleDateString('id-ID', { day: 'numeric', month: 'short' });
+}
+
+// ==========================================
+// Text-to-Speech (TTS) Voice Engine for Summary
+// ==========================================
+function initTts() {
+  if (!('speechSynthesis' in window)) {
+    if (dom.btnListenSummary) dom.btnListenSummary.style.display = 'none';
+    return;
+  }
+
+  // Preload browser voices
+  window.speechSynthesis.onvoiceschanged = () => {
+    state.tts.voices = window.speechSynthesis.getVoices();
+  };
+
+  if (dom.btnListenSummary) {
+    dom.btnListenSummary.addEventListener('click', () => {
+      if (!state.currentData) {
+        showToast('Silakan muat video terlebih dahulu.', 'warning');
+        return;
+      }
+      switchTab('tab-summary');
+      if (dom.ttsPlayerBar) dom.ttsPlayerBar.classList.remove('hidden');
+      startOrToggleTts();
+    });
+  }
+
+  if (dom.btnTtsPlayPause) {
+    dom.btnTtsPlayPause.addEventListener('click', startOrToggleTts);
+  }
+  if (dom.btnTtsStop) {
+    dom.btnTtsStop.addEventListener('click', stopTts);
+  }
+
+  if (dom.ttsSpeedSelect) {
+    dom.ttsSpeedSelect.addEventListener('change', () => {
+      state.tts.speed = parseFloat(dom.ttsSpeedSelect.value) || 1.0;
+      if (state.tts.isPlaying) {
+        stopTts();
+        startOrToggleTts();
+      }
+    });
+  }
+}
+
+function startOrToggleTts() {
+  if (!state.tts.synth) {
+    showToast('Fitur Text-to-Speech tidak didukung di browser ini.', 'warning');
+    return;
+  }
+
+  // Resume if paused
+  if (state.tts.synth.speaking && state.tts.synth.paused) {
+    state.tts.synth.resume();
+    state.tts.isPaused = false;
+    state.tts.isPlaying = true;
+    updateTtsUI(true, 'Memutar Ringkasan AI...');
+    return;
+  }
+
+  // Pause if currently speaking
+  if (state.tts.synth.speaking && !state.tts.synth.paused) {
+    state.tts.synth.pause();
+    state.tts.isPaused = true;
+    state.tts.isPlaying = false;
+    updateTtsUI(false, 'Dijeda');
+    return;
+  }
+
+  // Extract text from summary
+  const summaryContentEl = dom.summaryResult ? dom.summaryResult.querySelector('.summary-content') : null;
+  if (!summaryContentEl || !summaryContentEl.innerText.trim() || dom.summaryResult.querySelector('.empty-ai-prompt')) {
+    showToast('Belum ada ringkasan yang dibuat. Klik tombol Generate terlebih dahulu.', 'info');
+    return;
+  }
+
+  const rawText = summaryContentEl.innerText;
+  const cleanSpeechText = stripMarkdownForSpeech(rawText);
+
+  if (!cleanSpeechText) {
+    showToast('Teks ringkasan kosong.', 'warning');
+    return;
+  }
+
+  // Reset any prior utterance
+  state.tts.synth.cancel();
+
+  const utterance = new SpeechSynthesisUtterance(cleanSpeechText);
+  state.tts.utterance = utterance;
+  utterance.rate = parseFloat(dom.ttsSpeedSelect ? dom.ttsSpeedSelect.value : '1.0') || 1.0;
+
+  // Language & Voice
+  const lang = state.settings.language || 'id';
+  utterance.lang = lang === 'en' ? 'en-US' : 'id-ID';
+
+  const voices = state.tts.synth.getVoices();
+  if (voices && voices.length > 0) {
+    const targetCode = lang === 'en' ? 'en' : 'id';
+    const found = voices.find(v => v.lang && v.lang.toLowerCase().startsWith(targetCode));
+    if (found) utterance.voice = found;
+  }
+
+  utterance.onstart = () => {
+    state.tts.isPlaying = true;
+    state.tts.isPaused = false;
+    updateTtsUI(true, 'Memutar Ringkasan AI...');
+  };
+
+  utterance.onpause = () => {
+    state.tts.isPlaying = false;
+    state.tts.isPaused = true;
+    updateTtsUI(false, 'Dijeda');
+  };
+
+  utterance.onresume = () => {
+    state.tts.isPlaying = true;
+    state.tts.isPaused = false;
+    updateTtsUI(true, 'Memutar Ringkasan AI...');
+  };
+
+  utterance.onend = () => {
+    state.tts.isPlaying = false;
+    state.tts.isPaused = false;
+    updateTtsUI(false, 'Selesai didengarkan');
+  };
+
+  utterance.onerror = (e) => {
+    console.warn('TTS speech error:', e);
+    state.tts.isPlaying = false;
+    state.tts.isPaused = false;
+    updateTtsUI(false, 'Selesai');
+  };
+
+  state.tts.synth.speak(utterance);
+}
+
+function stopTts() {
+  if (state.tts.synth) {
+    state.tts.synth.cancel();
+  }
+  state.tts.isPlaying = false;
+  state.tts.isPaused = false;
+  updateTtsUI(false, 'Berhenti');
+}
+
+function updateTtsUI(isPlaying, statusText = '') {
+  if (dom.btnTtsPlayPause) {
+    dom.btnTtsPlayPause.innerHTML = isPlaying ? '<i class="fa-solid fa-pause"></i>' : '<i class="fa-solid fa-play"></i>';
+    dom.btnTtsPlayPause.title = isPlaying ? 'Jeda Suara' : 'Putar Ringkasan';
+  }
+  if (dom.ttsWaveform) {
+    dom.ttsWaveform.classList.toggle('active', isPlaying);
+  }
+  if (dom.ttsStatusText && statusText) {
+    dom.ttsStatusText.textContent = statusText;
+  }
+}
+
+function stripMarkdownForSpeech(md) {
+  if (!md) return '';
+  return md
+    .replace(/```[\s\S]*?```/g, '') // code blocks
+    .replace(/`([^`]+)`/g, '$1') // inline code
+    .replace(/#{1,6}\s+(.*)/g, '$1. ') // headings
+    .replace(/\*\*([^*]+)\*\*/g, '$1') // bold
+    .replace(/\*([^*]+)\*/g, '$1') // italics
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1') // links
+    .replace(/^\s*[-*+]\s+/gm, '') // list items
+    .replace(/^\s*\d+\.\s+/gm, '') // numbered lists
+    .replace(/>\s*(.*)/g, '$1') // blockquotes
+    .replace(/\[\d{1,2}:\d{2}(?::\d{2})?\]/g, '') // timestamps
+    .replace(/💡|✨|📌|🚀|🎯|🔥|⚡|🤖|•/g, '') // emojis & bullets
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+

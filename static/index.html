@@ -39,6 +39,11 @@
       </div>
 
       <div class="header-actions">
+        <button id="btnHistoryToggle" class="btn-icon btn-history-nav" title="Riwayat Video Tersimpan">
+          <i class="fa-solid fa-clock-rotate-left"></i>
+          <span class="btn-label">Riwayat</span>
+          <span class="history-badge-count" id="historyCountBadge">0</span>
+        </button>
         <button id="btnSettings" class="btn-icon" title="Pengaturan AI & API Key">
           <i class="fa-solid fa-sliders"></i>
           <span class="btn-label">Pengaturan</span>
@@ -105,6 +110,12 @@
       <div class="error-content">
         <h4 id="errorTitle">Gagal Memuat</h4>
         <p id="errorMessage">Subtitle tidak ditemukan pada video ini.</p>
+        <div id="whisperFallbackCard" class="whisper-fallback-action hidden">
+          <p class="whisper-hint"><i class="fa-solid fa-microphone-lines"></i> Subtitle tidak tersedia di YouTube. Anda dapat mengekstrak langsung dari audio video menggunakan Whisper AI:</p>
+          <button id="btnTranscribeWhisper" type="button" class="btn-whisper-action">
+            <i class="fa-solid fa-wand-magic-sparkles"></i> Transkrip Suara Video (Whisper AI)
+          </button>
+        </div>
       </div>
       <button id="btnCloseError" class="btn-close-error"><i class="fa-solid fa-xmark"></i></button>
     </div>
@@ -182,6 +193,9 @@
                 <i class="fa-solid fa-chevron-down caret"></i>
               </button>
               <div class="dropdown-menu" id="exportMenu">
+                <button class="dropdown-item btn-item-pdf" id="btnExportPdf">
+                  <i class="fa-solid fa-file-pdf"></i> Dokumen PDF Cantik (.pdf)
+                </button>
                 <button class="dropdown-item" id="btnDownloadTxt">
                   <i class="fa-regular fa-file-lines"></i> File Teks (.txt)
                 </button>
@@ -320,10 +334,43 @@
                 </button>
               </div>
 
-              <button id="btnRegenerateSummary" class="btn-sm btn-secondary" title="Buat ulang ringkasan">
-                <i class="fa-solid fa-rotate-right"></i>
-                <span>Generate</span>
-              </button>
+              <div class="ai-actions-right">
+                <button id="btnListenSummary" class="btn-sm btn-tts-listen" title="Dengarkan ringkasan ini dengan suara AI">
+                  <i class="fa-solid fa-volume-high"></i>
+                  <span>Dengarkan</span>
+                </button>
+                <button id="btnRegenerateSummary" class="btn-sm btn-secondary" title="Buat ulang ringkasan">
+                  <i class="fa-solid fa-rotate-right"></i>
+                  <span>Generate</span>
+                </button>
+              </div>
+            </div>
+
+            <!-- Text-to-Speech Player Bar -->
+            <div id="ttsPlayerBar" class="tts-player-bar hidden">
+              <div class="tts-controls">
+                <button type="button" id="btnTtsPlayPause" class="btn-tts-play" title="Putar Ringkasan">
+                  <i class="fa-solid fa-play"></i>
+                </button>
+                <button type="button" id="btnTtsStop" class="btn-tts-stop" title="Berhenti">
+                  <i class="fa-solid fa-stop"></i>
+                </button>
+                <div class="tts-speed-control">
+                  <label for="ttsSpeedSelect"><i class="fa-solid fa-gauge-high"></i></label>
+                  <select id="ttsSpeedSelect" class="tts-speed-select" title="Kecepatan Suara">
+                    <option value="0.85">0.85x</option>
+                    <option value="1" selected>1.0x</option>
+                    <option value="1.25">1.25x</option>
+                    <option value="1.5">1.5x</option>
+                  </select>
+                </div>
+              </div>
+              <div class="tts-status">
+                <div class="tts-waveform" id="ttsWaveform">
+                  <span></span><span></span><span></span><span></span><span></span>
+                </div>
+                <span id="ttsStatusText">Dengarkan Ringkasan AI</span>
+              </div>
             </div>
 
             <div id="summaryLoading" class="ai-loading hidden">
@@ -419,7 +466,8 @@
           <label for="aiProviderSelect">Penyedia AI (AI Provider):</label>
           <select id="aiProviderSelect" class="styled-select">
             <option value="gemini">Google Gemini (Disarankan - Model 1.5/2.0 Flash Gratis)</option>
-            <option value="openai">OpenAI (GPT-4o Mini)</option>
+            <option value="openai">OpenAI (GPT-4o Mini / Whisper)</option>
+            <option value="groq">Groq Cloud (Whisper Large v3 - Super Cepat & Gratis)</option>
           </select>
         </div>
 
@@ -443,6 +491,33 @@
       <div class="modal-footer">
         <button id="btnResetSettings" class="btn-secondary">Hapus API Key</button>
         <button id="btnSaveSettings" class="btn-primary">Simpan Pengaturan</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- History Drawer Panel -->
+  <div id="historyDrawer" class="drawer-container hidden">
+    <div class="drawer-backdrop" id="historyBackdrop"></div>
+    <div class="drawer-panel">
+      <div class="drawer-header">
+        <div class="drawer-title">
+          <i class="fa-solid fa-clock-rotate-left"></i>
+          <h3>Riwayat Transkrip</h3>
+          <span class="drawer-badge" id="drawerHistoryBadge">0</span>
+        </div>
+        <button type="button" id="btnCloseHistory" class="btn-close-modal"><i class="fa-solid fa-xmark"></i></button>
+      </div>
+      <div class="drawer-search-bar">
+        <i class="fa-solid fa-magnifying-glass"></i>
+        <input type="text" id="historySearchInput" placeholder="Cari di riwayat video..." />
+      </div>
+      <div class="drawer-body" id="historyListContainer">
+        <!-- Rendered via JS -->
+      </div>
+      <div class="drawer-footer">
+        <button type="button" id="btnClearHistory" class="btn-secondary btn-sm">
+          <i class="fa-regular fa-trash-can"></i> Hapus Semua Riwayat
+        </button>
       </div>
     </div>
   </div>

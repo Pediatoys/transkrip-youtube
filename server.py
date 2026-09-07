@@ -2,6 +2,8 @@ import os
 import sys
 import re
 import json
+import tempfile
+import glob
 
 # Ensure stdout handles UTF-8 on Windows
 if hasattr(sys.stdout, 'reconfigure'):
@@ -97,6 +99,12 @@ class ChatRequest(BaseModel):
     language: Optional[str] = "id"
     api_key: Optional[str] = None
     provider: Optional[str] = "gemini"
+
+class TranscribeAudioRequest(BaseModel):
+    video_id: str
+    api_key: Optional[str] = None
+    provider: Optional[str] = "groq" # groq | openai
+    language: Optional[str] = None
 
 import html
 
@@ -383,13 +391,27 @@ async def get_transcript(
         }
 
     except TranscriptsDisabled:
-        raise HTTPException(status_code=404, detail="Transkrip / Subtitle dinonaktifkan oleh pemilik video ini di YouTube.")
+        raise HTTPException(
+            status_code=404, 
+            detail={
+                "message": "Transkrip / Subtitle dinonaktifkan oleh pemilik video ini di YouTube.",
+                "can_whisper": True,
+                "video_id": video_id
+            }
+        )
     except NoTranscriptFound:
-        raise HTTPException(status_code=404, detail="Tidak ada transkrip / subtitle yang ditemukan untuk video ini.")
+        raise HTTPException(
+            status_code=404, 
+            detail={
+                "message": "Tidak ada transkrip / subtitle bawaan yang ditemukan untuk video ini.",
+                "can_whisper": True,
+                "video_id": video_id
+            }
+        )
     except VideoUnavailable:
-        raise HTTPException(status_code=404, detail="Video YouTube tidak tersedia atau bersifat privat.")
+        raise HTTPException(status_code=404, detail={"message": "Video YouTube tidak tersedia atau bersifat privat."})
     except IpBlocked:
-        raise HTTPException(status_code=429, detail="Permintaan sementara dibatasi oleh YouTube. Silakan coba beberapa saat lagi.")
+        raise HTTPException(status_code=429, detail={"message": "Permintaan sementara dibatasi oleh YouTube. Silakan coba beberapa saat lagi."})
     except Exception as e:
         # Fallback to direct fetch if list() failed
         try:
@@ -421,7 +443,165 @@ async def get_transcript(
                 "formatted_duration": format_time(total_duration)
             }
         except Exception as e2:
-            raise HTTPException(status_code=500, detail=f"Gagal mengambil transkrip: {str(e2)}")
+            raise HTTPException(
+                status_code=500, 
+                detail={
+                    "message": f"Gagal mengambil transkrip: {str(e2)}",
+                    "can_whisper": True,
+                    "video_id": video_id
+                }
+            )
+
+@app.post("/api/transcribe-audio")
+async def transcribe_audio_whisper(req: TranscribeAudioRequest):
+    video_id = extract_video_id(req.video_id)
+    if not video_id:
+        raise HTTPException(status_code=400, detail="Video ID tidak valid.")
+
+    api_key = req.api_key or os.environ.get("GROQ_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Kunci API dibutuhkan untuk Whisper. Silakan masukkan Groq API Key gratis (dari console.groq.com) atau OpenAI API Key di menu Pengaturan."
+        )
+
+    provider = req.provider or ("openai" if (api_key.startswith("sk-") and not api_key.startswith("gsk_")) else "groq")
+
+    # 1. Fetch metadata
+    meta = await fetch_video_metadata(video_id)
+
+    # 2. Extract audio via yt-dlp
+    import yt_dlp
+    temp_dir = tempfile.gettempdir()
+    out_prefix = os.path.join(temp_dir, f"yt_whisper_{video_id}")
+    out_tmpl = f"{out_prefix}.%(ext)s"
+
+    # Clean old files
+    for old_file in glob.glob(f"{out_prefix}.*"):
+        try:
+            os.remove(old_file)
+        except Exception:
+            pass
+
+    ydl_opts = {
+        'format': 'ba[ext=m4a]/ba[ext=mp3]/ba/b',
+        'outtmpl': out_tmpl,
+        'quiet': True,
+        'no_warnings': True,
+        'max_filesize': 25 * 1024 * 1024,
+        'noplaylist': True,
+    }
+
+    audio_file_path = None
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([f"https://www.youtube.com/watch?v={video_id}"])
+
+        downloaded = glob.glob(f"{out_prefix}.*")
+        if downloaded:
+            audio_file_path = downloaded[0]
+        else:
+            raise Exception("File audio tidak berhasil diunduh dari YouTube.")
+
+        file_size = os.path.getsize(audio_file_path)
+        if file_size > 25 * 1024 * 1024:
+            raise HTTPException(status_code=400, detail="Ukuran audio melebihi batas 25MB Whisper API.")
+
+        # 3. Call Whisper API
+        with open(audio_file_path, "rb") as f:
+            audio_bytes = f.read()
+
+        filename = os.path.basename(audio_file_path)
+        mime_type = "audio/mp4" if filename.endswith(".m4a") else ("audio/mpeg" if filename.endswith(".mp3") else "application/octet-stream")
+
+        if provider == "openai":
+            endpoint = "https://api.openai.com/v1/audio/transcriptions"
+            model_name = "whisper-1"
+        else:
+            endpoint = "https://api.groq.com/openai/v1/audio/transcriptions"
+            model_name = "whisper-large-v3-turbo"
+
+        headers = {
+            "Authorization": f"Bearer {api_key}"
+        }
+        files = {
+            "file": (filename, audio_bytes, mime_type)
+        }
+        data = {
+            "model": model_name,
+            "response_format": "verbose_json"
+        }
+        if req.language:
+            data["language"] = req.language
+
+        async with httpx.AsyncClient(timeout=120.0) as client:
+            resp = await client.post(endpoint, headers=headers, files=files, data=data)
+
+        if resp.status_code != 200:
+            err_msg = resp.text
+            try:
+                err_json = resp.json()
+                err_msg = err_json.get("error", {}).get("message", resp.text)
+            except Exception:
+                pass
+            raise HTTPException(status_code=resp.status_code, detail=f"Whisper API error: {err_msg}")
+
+        result_json = resp.json()
+        segments = result_json.get("segments", [])
+
+        if not segments:
+            raw_text = result_json.get("text", "").strip()
+            if raw_text:
+                transcript_data = [{
+                    "start": 0.0,
+                    "duration": 5.0,
+                    "text": raw_text
+                }]
+            else:
+                transcript_data = []
+        else:
+            transcript_data = [
+                {
+                    "start": round(seg.get("start", 0), 2),
+                    "duration": round(max(0.5, seg.get("end", 0) - seg.get("start", 0)), 2),
+                    "text": seg.get("text", "").strip()
+                }
+                for seg in segments
+                if seg.get("text", "").strip()
+            ]
+
+        total_words = sum(len(item["text"].split()) for item in transcript_data)
+        total_duration = transcript_data[-1]["start"] + transcript_data[-1]["duration"] if transcript_data else 0
+
+        return {
+            "video_id": video_id,
+            "title": meta["title"],
+            "author": meta["author"],
+            "author_url": meta["author_url"],
+            "thumbnail_url": meta["thumbnail_url"],
+            "selected_language": result_json.get("language", req.language or "id"),
+            "language_name": f"Whisper AI ({model_name})",
+            "is_generated": True,
+            "is_whisper": True,
+            "available_languages": [{"code": "whisper", "name": "Whisper AI", "is_generated": True}],
+            "transcript": transcript_data,
+            "paragraphs": group_into_paragraphs(transcript_data),
+            "total_items": len(transcript_data),
+            "total_words": total_words,
+            "total_duration": round(total_duration, 2),
+            "formatted_duration": format_time(total_duration)
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gagal memproses audio dengan Whisper: {str(e)}")
+    finally:
+        if audio_file_path and os.path.exists(audio_file_path):
+            try:
+                os.remove(audio_file_path)
+            except Exception:
+                pass
 
 def heuristic_polish_text(text: str, language: str = "id") -> str:
     if not text:
