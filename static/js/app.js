@@ -5,6 +5,7 @@
 
 // Application State
 const state = {
+  deferredInstallPrompt: null,
   currentVideoId: null,
   currentData: null,
   player: null,
@@ -38,6 +39,7 @@ const state = {
 
 // DOM Elements Cache
 const dom = {
+  installAppBtn: document.getElementById('btnInstallApp'),
   themeToggle: document.getElementById('btnThemeToggle'),
   settingsBtn: document.getElementById('btnSettings'),
   settingsModal: document.getElementById('settingsModal'),
@@ -150,6 +152,29 @@ const dom = {
 // Initialization
 // ==========================================
 document.addEventListener('DOMContentLoaded', () => {
+  window.addEventListener('beforeinstallprompt', (event) => {
+    event.preventDefault();
+    state.deferredInstallPrompt = event;
+    if (dom.installAppBtn) dom.installAppBtn.hidden = false;
+  });
+
+  window.addEventListener('appinstalled', () => {
+    state.deferredInstallPrompt = null;
+    if (dom.installAppBtn) dom.installAppBtn.hidden = true;
+  });
+
+  dom.installAppBtn?.addEventListener('click', async () => {
+    if (!state.deferredInstallPrompt) return;
+    state.deferredInstallPrompt.prompt();
+    await state.deferredInstallPrompt.userChoice;
+    state.deferredInstallPrompt = null;
+    dom.installAppBtn.hidden = true;
+  });
+
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/static/sw.js').catch(() => {});
+  }
+
   initTheme();
   initSettings();
   initHistory();

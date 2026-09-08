@@ -5,6 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TranskripAI - YouTube Transcript Generator & AI Summarizer</title>
   <meta name="description" content="Ekstrak transkrip video YouTube secara instan dengan timestamp interaktif, ringkasan AI, dan ekspor ke SRT, TXT, dan Markdown.">
+  <meta name="theme-color" content="#0b1020">
+  <link rel="manifest" href="/static/manifest.json">
+  <link rel="icon" href="/static/icons/notetube.svg" type="image/svg+xml">
   
   <!-- Google Fonts: Plus Jakarta Sans -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -39,6 +42,10 @@
       </div>
 
       <div class="header-actions">
+        <button id="btnInstallApp" class="btn-icon" title="Install NoteTube" hidden>
+          <i class="fa-solid fa-download"></i>
+          <span class="btn-label">Install App</span>
+        </button>
         <button id="btnHistoryToggle" class="btn-icon btn-history-nav" title="Riwayat Video Tersimpan">
           <i class="fa-solid fa-clock-rotate-left"></i>
           <span class="btn-label">Riwayat</span>

@@ -896,5 +896,8 @@ async def serve_index():
 
 if __name__ == "__main__":
     import uvicorn
-    print("[NoteTube Server] starting on http://localhost:8088 ...")
-    uvicorn.run("server:app", host="127.0.0.1", port=8088, reload=True)
+    host = os.getenv("HOST", "127.0.0.1")
+    port = int(os.getenv("PORT", "8088"))
+    reload_enabled = os.getenv("UVICORN_RELOAD", "0").lower() in {"1", "true", "yes"}
+    print(f"[NoteTube Server] starting on http://{host}:{port} ...")
+    uvicorn.run("server:app", host=host, port=port, reload=reload_enabled)
